@@ -131,3 +131,144 @@ promise.then(null, function(err) {
 ```
 
 `then()`和`then()`背后的意图是，让你组合使用它们去正确处理异步操作的结果。这个系统比事件和回调更好，因为它使操作成功或者失败完全明确。（当有错误时事件不会触发，在回调里，你必须始终记住检验错误参数。）只要知道，如果你不把rejection handler附加给promise，所有的错误将默默地发生。即使handler只是打印失败日志，通常也要传递一个rejection handler。
+
+即使在promise已经处理之后，如果fullfillment或者rejection添加到作业队列，它仍然会被执行。这允许你在任意时候添加新的fullfillment和rejection，保证它们将被调用。比如：
+
+```js
+let promise = readFile("example.txt");
+
+// 原始的fulfillment handler
+promise.then(function(contents) {
+    console.log(contents);
+
+    // 另外一个
+    promise.then(function(contents) {
+        console.log(contents);
+    });
+});
+```
+
+在这段代码中，fulfillment handler给同一个promise添加了另外一个fulfillment。这个promise在这个时候已经是fulfilled，所以新的fulfillment handler被添加到作业队列，并且条件满足就会调用。Rejection handlers也是同样的原理。
+
+当promise resolved之后，每个`then()`或者`catch()`调用将创建以各新的作业队列去执行。但是这些作业最终在一个单独的作业队列中，这作业队列只保存promises。第二个作业队列的精确的细节对于理解如何使用promise不是很重要，只要你理解一般情况下作业队列如何工作。
+
+### 创建未处理的(unsettled) Promises
+使用`Promise`构造函数创建新的promise。这个构造函数接受一个参数：一个称为 *executor* 的函数，它包含初始化promise的代码。executor传递两个命名为`resolve()`和`reject()`的函数作为参数。当executor已经成功完成示意promise准备resolved时，调用`resolve()`函数，`reject()`函数表示executor已经失败。
+
+```js
+// Node.js 示例
+
+let fs = require("fs");
+
+function readFile(filename) {
+    return new Promise(function(resolve, reject) {
+
+        // 触发异步操作
+        fs.readFile(filename, { encoding: "utf8" }, function(err, contents) {
+
+            // 检查错误
+            if (err) {
+                reject(err);
+                return;
+            }
+
+            // 读取成功
+            resolve(contents);
+
+        });
+    });
+}
+
+let promise = readFile("example.txt");
+
+// 监听 fulfillment 和 rejection
+promise.then(function(contents) {
+    // fulfillment
+    console.log(contents);
+}, function(err) {
+    // rejection
+    console.error(err.message);
+});
+```
+
+在这个示例中，原生的Node.js `fs.readFile()` 异步调用包裹在promise中。excutor要么传递错误对象到`reject()`函数，要么传递文件内容到`resolve()`函数。
+
+请记住，当`readFile()`调用后，executor将立即执行。在executor内，调用`resolve()`或者`reject()`时，添加一个作业到作业队列来resolve promise。这称之为 *作业调度* (job scheduling)，而且如果你曾经使用过`setTimeout()`或者
+`setInterval()`，你应该已经很熟悉它。在作业调度中，你给作业队列添加一个新的作业，然后说“现在不要执行它，但是之后要执行它。”比如，`setTimeout()`函数让你在作业添加到队列之前指定延时时间：
+
+```js
+// 500毫秒之后添加此函数到作业队列中。
+setTimeout(function() {
+    console.log("Timeout");
+}, 500);
+
+console.log("Hi!");
+```
+
+这段代码调度作业在500毫秒之后添加到作业队列。这两个`console.log()`调用产生如下输出：
+
+```
+Hi!
+Timeout
+```
+
+由于500毫秒延时，传入`setTimeout()`的函数的输出显示在`console.log("Hi!")`调用的输出之后。
+
+Promises的工作原理相似。promise的executor会立即执行，先于在这段源码之后的任何内容。比如：
+
+```js
+let promise = new Promise(function(resolve, reject) {
+    console.log("Promise");
+    resolve();
+});
+
+console.log("Hi!");
+```
+
+这段代码的输出是：
+
+```
+Promise
+Hi!
+```
+
+调用`resolve()`将触发异步操作。传入`then()`和`catch()`的函数将被异步执行，这些函数也将添加到作业队列。这有一个示例：
+
+```js
+let promise = new Promise(function(resolve, reject) {
+    console.log("Promise");
+    resolve();
+});
+
+promise.then(function() {
+    console.log("Resolved.");
+});
+
+console.log("Hi!");
+```
+
+这个示例的输出是：
+
+```
+Promise
+Hi!
+Resolved
+```
+
+注意到计时`then()`调用出现在`console.log("Hi!")`之前，它实际上之后才执行（不像executor）。这是因为fulfillment和rejection的handlers通常是在executor完成之后，添加到工作队列的末尾。
+
+### 创建处理的(settled)Promises
+`Promise`的构造函数是创建未处理的promise的最好方式，因为promise executor执行的动态性质。但是如果你想promise只是表示一个简单值，这样调度作业没有意义，它只是简单地传递值给`resolve()`函数。取而代之，有两种方法可以创建处理的promises并给予指定的值。
+
+#### 使用Promise.resolve()
+`Promise.resolve()`方法接受一个参数并且返回fulfilled状态的promise。这表示没有作业调度发生，而且你需要添加一个或者多个fulfillment handler到promise去提取值。比如：
+
+```js
+let promise = Promise.resolve(42);
+
+promise.then(function(value) {
+    console.log(value);         // 42
+});
+```
+
+这段代码创建一个fulfilled状态的promise，所以fulfillment handler接受的value为42。如果rejection handler也添加到这个promise，这个rejection handler将不会被调用，因为这promise绝不会处于rejected状态。
