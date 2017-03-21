@@ -272,3 +272,164 @@ promise.then(function(value) {
 ```
 
 这段代码创建一个fulfilled状态的promise，所以fulfillment handler接受的value为42。如果rejection handler也添加到这个promise，这个rejection handler将不会被调用，因为这promise绝不会处于rejected状态。
+
+#### 使用Promise.reject()
+你也可以使用`Promise.resolve()`方法创建rejected promise。这和`Promise.resolve()`效果一样，除了创建的promise属于rejected状态，如下：
+
+```js
+let promise = Promise.reject(42);
+
+promise.catch(function(value) {
+    console.log(value);         // 42
+});
+```
+
+添加到此promise的任何rejection handler都会被调用，但是fulfillment handlers不会。
+
+如果你传递一个promise给`Promise.resolve()`或者`Promise.reject()`方法，该promise会毫无修改的返回。
+
+#### 非Promise Thenables
+`Promise.resolve()`和`Promise.reject()`也接受非promise thenables作为参数。当传递一个非promise thenable，这些方法创建一个新的promise，在`then()`函数之后调用。
+
+当一个对象有`then()`方法时，一个非promise thenable就被创建了，`then()`方法接受`resolve`和`reject`参数，比如：
+
+```js
+let thenable = {
+    then: function(resolve, reject) {
+        resolve(42);
+    }
+};
+```
+
+这个示例中的`thenable`对象除了`then()`方法之外，没有与promise相关联的特性。你可以调用`Promise.resolve()`把`thenable`转换为一个fulfilled promise：
+
+```js
+let thenable = {
+    then: function(resolve, reject) {
+        resolve(42);
+    }
+};
+
+let p1 = Promise.resolve(thenable);
+p1.then(function(value) {
+    console.log(value);     // 42
+});
+```
+
+在这个实例中，`Promise.resolve()`调用`thenable.then()`，以便promise状态可以检测到。`thenable`的promise状态是fulfilled，因为在`then()`方法的内部调用了`resolve(42)`。在fulfilled状态下创建的新promise为p1，它的值来自`thenable`(它为42)，而且p1的fulfillment handler接受42作为参数值。
+
+同样的流程可以用于`Promise.resolve()`从thenable中创建rejected promise。
+
+```js
+let thenable = {
+    then: function(resolve, reject) {
+        reject(42);
+    }
+};
+
+let p1 = Promise.resolve(thenable);
+p1.catch(function(value) {
+    console.log(value);     // 42
+});
+```
+
+这个示例与上一个示例类似，除了`thenable`是rejected。当执行`thenable.then()`，在rejected状态创建一个值为42的新promise。这个值接着会传递给`p1`的rejection handler。
+
+`Promise.resolve()`和`Promise.reject()`这种机制，允许你轻松地结合非promise thenable使用。许多第三方库在ECMAScript 6引入promises之前就使用了thenables，所以将thenables转化为正式的promise的能力对于向后兼容之前存在的库很重要。当你不确定对象是否是promise时，把这个对象传递给`Promise.resolve()`或者`Promise.reject()`（取决于你的预期结果）是最好的判断方法，因为promise只会无变化的传递。
+
+#### 执行器错误
+如果在执行器中报错，然后promise的rejection handler就会被调用。比如：
+
+```js
+let promise = new Promise(function(resolve, reject) {
+    throw new Error("Explosion!");
+});
+
+promise.catch(function(error) {
+    console.log(error.message);     // "Explosion!"
+});
+```
+
+在这段代码中，这个执行器试图报错。在每个执行器中，有一个隐性的`try-catch`，因此错误会被捕获，然后传给rejection handler。上一个示例等效于：
+
+```js
+let promise = new Promise(function(resolve, reject) {
+    try {
+        throw new Error("Explosion!");
+    } catch (ex) {
+        reject(ex);
+    }
+});
+
+promise.catch(function(error) {
+    console.log(error.message);     // "Explosion!"
+});
+```
+
+这个执行器处理捕获任何抛出的异常，用来简化通用的用例，但是执行器里抛出的异常只有当rejection handler存在时才会报告。否则，错误会被抑制。
+这在开发者早期使用promises就是一个问题，而且JavaScript环境通过提供捕获rejected promise的钩子来解决这个问题。
+
+### 全局Promise Rejection处理
+
+promises最有争议的一方面是，当promise在没有rejection handler时rejected之后，它只会隐式失败。一些人认为这是规范中最大的缺陷，因为它是JavaScript语言中唯一没让错误显式暴露的部分。由于promise的特性，确定promise rejection是否处理并不简单。比如，看这个示例：
+
+```js
+let rejected = Promise.reject(42);
+
+// 此刻，rejected没有处理
+
+// 一段时间之后...
+rejected.catch(function(value) {
+    // 现在rejected被处理了
+    console.log(value);
+});
+```
+
+你可以在任何时候调用`then()`或者`catch()`，无论这个promise是否处理，它们都能正常工作。在这个例子中，这个promise会立即rejcted，但是之后才会处理。
+
+虽然ECMAScript的下个版本可能解决这个问题，当时浏览器和Node.js都已经实现这个变化去解决这个开发者痛点。它们都不是ECMAScript 6规范的一部分，但在使用promise时是很有用的工具。
+
+#### Node.js Rejection处理
+在Node.js，`process`对象上有两个事件关于promise rejection处理：
+
+ - `unhandledRejection`：当promise被rejected，并且在事件循环的一回合内没有调用rejection handler时触发。
+ - `rejectionHandled`：当promise被rejected，并且在事件循环的一回合之后调用rejection handler时触发。
+
+这些事件目的是帮助识别rejected和未处理的promise。
+
+`unhandledRejection`事件handler传递rejection原因（通常是一个错误对象）和rejected的promise作为参数。下面这段代码显示实际应用的`unhandledRejection`：
+
+```js
+let rejected;
+
+process.on("unhandledRejection", function(reason, promise) {
+    console.log(reason.message);            // "Explosion!"
+    console.log(rejected === promise);      // true
+});
+
+rejected = Promise.reject(new Error("Explosion!"));
+```
+
+这个示例创建了一个带有error对象的rejected promise，并且监听`unhandledRejection`时间。这个事件handler接受error对象作为第一个参数，以及promise作为第二参数。
+
+这个`rejectionHandled`事件handler只有一个参数，它是一个rejected的promise。例如：
+
+```js
+let rejected;
+
+process.on("rejectionHandled", function(promise) {
+    console.log(rejected === promise);              // true
+});
+
+rejected = Promise.reject(new Error("Explosion!"));
+
+// 等待添加rejection handler
+setTimeout(function() {
+    rejected.catch(function(value) {
+        console.log(value.message);     // "Explosion!"
+    });
+}, 1000);
+```
+
+这里，当最后调用rejection handler时，触发`rejectionHandled`事件。
+ 
