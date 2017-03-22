@@ -431,5 +431,34 @@ setTimeout(function() {
 }, 1000);
 ```
 
-这里，当最后调用rejection handler时，触发`rejectionHandled`事件。
- 
+这里，当最后调用rejection handler时，触发`rejectionHandled`事件。创建`rejected`之后，如果`rejected`调用rejection handler，那么这个事件不会触发。在创建`rejected`所在的事件循环中，调用rejection handler，这是无用的。
+
+为了更好地追踪可能未处理的rejection，使用`rejectionHandled`和`unhandledRejection`事件去维持可能未处理的rejection列表。然后等待一段时间去检查这个列表。比如：
+
+```js
+let possiblyUnhandledRejections = new Map();
+
+// 当rejection未处理，把它添加到map
+process.on("unhandledRejection", function(reason, promise) {
+    possiblyUnhandledRejections.set(promise, reason);
+});
+
+process.on("rejectionHandled", function(promise) {
+    possiblyUnhandledRejections.delete(promise);
+});
+
+setInterval(function() {
+
+    possiblyUnhandledRejections.forEach(function(reason, promise) {
+        console.log(reason.message ? reason.message : reason);
+
+        // 处理这些rejections
+        handleRejection(promise, reason);
+    });
+
+    possiblyUnhandledRejections.clear();
+
+}, 60000);
+```
+
+这是一个简单的未处理的rejection追踪器。它使用map去存储promise和它们rejection的原因。每个promise是一个key，promise的原因是关联值。每次触发`unhandledRejection`，就添加promise和rejection到map。每次触发`rejectionHandled`事件，就把处理的promise从map中移除。结果是，随着事件被调用，`possiblyUnhandledRejections` 增长和缩减。定期调用`setInterval()`检查可能未处理的rejection列表，然后想控制台输出信息（实际上，你可能想做一些其他的日志或者其他方式处理rejection）。
