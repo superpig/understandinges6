@@ -461,4 +461,190 @@ setInterval(function() {
 }, 60000);
 ```
 
-这是一个简单的未处理的rejection追踪器。它使用map去存储promise和它们rejection的原因。每个promise是一个key，promise的原因是关联值。每次触发`unhandledRejection`，就添加promise和rejection到map。每次触发`rejectionHandled`事件，就把处理的promise从map中移除。结果是，随着事件被调用，`possiblyUnhandledRejections` 增长和缩减。定期调用`setInterval()`检查可能未处理的rejection列表，然后想控制台输出信息（实际上，你可能想做一些其他的日志或者其他方式处理rejection）。
+这是一个简单的未处理的rejection追踪器。它使用map去存储promise和它们rejection的原因。每个promise是一个key，promise的原因是关联值。每次触发`unhandledRejection`，就添加promise和rejection到map。每次触发`rejectionHandled`事件，就把处理的promise从map中移除。结果是，随着事件被调用，`possiblyUnhandledRejections` 增长和缩减。定期调用`setInterval()`检查可能未处理的rejection列表，然后想控制台输出信息（实际上，你可能想做一些其他的日志或者其他方式处理rejection）。这个实例中使用了map，而不是weak map，因为你需要定期检查这个map，确认哪个promises存在，使用weak map是无法做到的。
+
+虽然这个示例只适应于Node.js，但是浏览器也实现了类似的机制去告知开发者关于未处理的rejections。
+
+#### 浏览器Rejection处理
+
+浏览器也触发了两个事件帮助识别未处理的rejections。这些事件由`window`对象触发，而且和他们的Node.js等效。
+
+- `unhandledrejection`：当promise被rejected，而且在一轮的事件循环内没有rejection handler时触发。
+- `rejectionhandled`：当promise被rejected，而且在第一轮事件循环内调用了rejection handler。
+
+Node.js实现了给事件handler传递单个参数，然而浏览器事件的事件handler只接收一个带有如下参数的事件对象：
+
+- `type`：事件的名称（`"unhandledrejection"` 或者`"rejectionhandled"`)。
+- `promise`：被rejected的promise对象。
+- `reason`：来自promise的rejection值
+
+在浏览器实现中的其他差异是，对于这两个事件都可以访问rejection value（`reason`）。比如：
+
+```js
+let rejected;
+
+window.onunhandledrejection = function(event) {
+    console.log(event.type);                    // "unhandledrejection"
+    console.log(event.reason.message);          // "Explosion!"
+    console.log(rejected === event.promise);    // true
+});
+
+window.onrejectionhandled = function(event) {
+    console.log(event.type);                    // "rejectionhandled"
+    console.log(event.reason.message);          // "Explosion!"
+    console.log(rejected === event.promise);    // true
+});
+
+rejected = Promise.reject(new Error("Explosion!"));
+
+```
+
+这段代码使用`onunhandledrejection` 和`onrejectionhandled`DOM 0 级表示法赋值事件handlers。（如果你喜欢，你也可使用`addEventListener("unhandledrejection")` 和 `addEventListener("rejectionhandled")`）每个事件handler接收一个事件对象，它包含关于rejected promise的信息。`type`，`promise`和`reason`属性在事件handler都是可访问的。
+
+在浏览器中的追踪未处理的rejections的代码和Node.js中的代码也十分相似：
+
+```js
+let possiblyUnhandledRejections = new Map();
+
+// 当rejection未处理，把它添加到map
+window.onunhandledrejection = function(event) {
+    possiblyUnhandledRejections.set(event.promise, event.reason);
+};
+
+window.onrejectionhandled = function(event) {
+    possiblyUnhandledRejections.delete(event.promise);
+};
+
+setInterval(function() {
+
+    possiblyUnhandledRejections.forEach(function(reason, promise) {
+        console.log(reason.message ? reason.message : reason);
+
+        // 处理这些rejections
+        handleRejection(promise, reason);
+    });
+
+    possiblyUnhandledRejections.clear();
+
+}, 60000);
+```
+
+这个实现几乎和Node.js的实现完全一样。它使用相同的方法在maps存储promises和它们的rejection值，然后之后检查它们。唯一的区别在于事件handler中在哪提取信息。
+
+虽然处理promise rejection很棘手，但是你才刚刚开始看到promises的功能有多强大。是时候采取下一步，把多个promises链接起来。
+
+### 链接Promises
+
+在这点上，promises可能只比使用回调和`setTimeout`函数多了些改进，但是还有更多，而不只是满足眼睛。进一步讲，有很多方法实现链式调用promise，去完成更多的异步行为。
+
+`then()`或者`catch()`的每次调用实际上创建和返回另外一个promise。仅当第一个promise被fulfilled或rejected之后，第二个promise才会resolved。请看这个示例：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+p1.then(function(value) {
+    console.log(value);
+}).then(function() {
+    console.log("Finished");
+});
+```
+
+这段代码输出：
+
+```js
+42
+Finished
+```
+
+`p1.then()`在调用`then()`上返回第二个promise。第二个`then()`的fulfilment handler在第一个promise已经resolved之后才会被调用，如果你不链式这个示例，它看起来如下：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+let p2 = p1.then(function(value) {
+    console.log(value);
+})
+
+p2.then(function() {
+    console.log("Finished");
+});
+```
+
+在这个非链式的版本中，`p1.then()`的结果存储在`p2`，然后调用`p2.then()`添加最后fulfillment handler。你可能已经猜到，`p2.then()`也返回了一个promise。这个示例只是没有使用那个promise。
+
+#### 捕获错误
+
+链式Promises允许你捕获异常，这个异常可能发生在前一个promise的fulfillment或者rejection handler中。比如：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+p1.then(function(value) {
+    throw new Error("Boom!");
+}).catch(function(error) {
+    console.log(error.message);     // "Boom!"
+});
+```
+
+在这段代码中，`p1`的fulfilment handler抛出一个错误。在第二promise上链式调用`catch`方法，能够通过它的rejection handler接收那个错误。如果rejection handler抛出错误也一样：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    throw new Error("Explosion!");
+});
+
+p1.catch(function(error) {
+    console.log(error.message);     // "Explosion!"
+    throw new Error("Boom!");
+}).catch(function(error) {
+    console.log(error.message);     // "Boom!"
+});
+```
+
+这里，执行器抛出了一个错误，然后触发了`p1`promise的rejection handler。这个handler然后抛出了另外一个错误，它被第二个promise的rejection handler捕获。这链式的promise调用已经知道这条链中其他promise的错误。
+
+通常在promise链的结尾有一个rejection handler ，确保你可以正确地处理可能发生的任何错误。
+
+### 在promise链中返回值
+
+promise链中另一个重要的方面是，能够把数据从一个promise传递到下一个promise。你已经看到在执行器内传递给`resolve()`的值被传递给该promise的fulfillment handler。你可以通过从fulfilment handler指定返回值，继续沿着promise链传递数据。例如：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+p1.then(function(value) {
+    console.log(value);         // "42"
+    return value + 1;
+}).then(function(value) {
+    console.log(value);         // "43"
+});
+```
+
+在执行时，`p1`的fulfilment handler返回`value + 1`。因为`value`是42（来自这个执行器），这个fulfilment返回43。该值然后被传递给第二个promise的fulfilment handler，把它输出到控制台。
+
+你可以使用rejection handler做同样的事。当调用rejection handler时，它可能返回一个值。如果返回一个值，这个值用于fulfill 链中下一个promise，比如：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    reject(42);
+});
+
+p1.catch(function(value) {
+    // 第一个 fulfillment handler
+    console.log(value);         // "42"
+    return value + 1;
+}).then(function(value) {
+    // 第二个 fulfillment handler
+    console.log(value);         // "43"
+});
+```
+
+这里，执行器用42调用`reject()`。这个值传入promise的rejection handler，在这里返回`value + 1`。即使这个返回值来自rejection handler，它仍然在链中下一个promise的fulfilment handler中使用，如果需要，一个promise的失败可以允许整条链恢复。
