@@ -461,7 +461,8 @@ setInterval(function() {
 }, 60000);
 ```
 
-这是一个简单的未处理的rejection追踪器。它使用map去存储promise和它们rejection的原因。每个promise是一个key，promise的原因是关联值。每次触发`unhandledRejection`，就添加promise和rejection到map。每次触发`rejectionHandled`事件，就把处理的promise从map中移除。结果是，随着事件被调用，`possiblyUnhandledRejections` 增长和缩减。定期调用`setInterval()`检查可能未处理的rejection列表，然后想控制台输出信息（实际上，你可能想做一些其他的日志或者其他方式处理rejection）。这个实例中使用了map，而不是weak map，因为你需要定期检查这个map，确认哪个promises存在，使用weak map是无法做到的。
+这是一个简单的未处理的rejection追踪器。它使用map去存储promise和它们rejection的原因。每个promise是一个key，promise的原因是关联值。每次触发`unhandledRejection`，就添加promise和rejection到map。每次触发`rejectionHandled`事件，就把处理的promise从map中移除。结果是，随着事件被调用，`possiblyUnhandledRejections` 增长和缩减。定期调用`setInterval()`检查可能未处理的rejection列表，然后想控制台输出信息（实际上，你可能想做一些其他的日志或者其他方式处理rejection）。
+这个实例中使用了map，而不是weak map，因为你需要定期检查这个map，确认哪个promises存在，使用weak map是无法做到的。
 
 虽然这个示例只适应于Node.js，但是浏览器也实现了类似的机制去告知开发者关于未处理的rejections。
 
@@ -648,3 +649,425 @@ p1.catch(function(value) {
 ```
 
 这里，执行器用42调用`reject()`。这个值传入promise的rejection handler，在这里返回`value + 1`。即使这个返回值来自rejection handler，它仍然在链中下一个promise的fulfilment handler中使用，如果需要，一个promise的失败可以允许整条链恢复。
+
+#### 在Promise链中返回Promises
+
+从fulfillment和rejection handler里返回基本类型值，这允许在promises之间传递数据，但如果你想返回一个对象该怎么办？如果这个对象是一个promise，然后需要采取额外的步骤判断如何处理。看如下示例：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+let p2 = new Promise(function(resolve, reject) {
+    resolve(43);
+});
+
+p1.then(function(value) {
+    // 第一个 fulfillment handler
+    console.log(value);     // 42
+    return p2;
+}).then(function(value) {
+    // 第二个 fulfillment handler
+    console.log(value);     // 43
+});
+```
+
+在这段代码中，`p1`调度工作resolves为42。`p1`的fulfillment handler返回`p2`，一个已经处于resolved状态的promise。调用第二个fulfilment handler，因为`p2`已经被fulfilled。如果`p2`被rejected，将会调用rejection handler（如果存在），而不是第二个fulfilment handler。
+
+重要的是认识这个模式，第二个fulfillment handler没有添加到`p2`，而是第三个promise。所以，第二个fulfilment handler附属于第三个promise，让前一个示例等效于这个：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+let p2 = new Promise(function(resolve, reject) {
+    resolve(43);
+});
+
+let p3 = p1.then(function(value) {
+    // 第一个 fulfillment handler
+    console.log(value);     // 42
+    return p2;
+});
+
+p3.then(function(value) {
+    // 第二个 fulfillment handler
+    console.log(value);     // 43
+});
+```
+
+这里，很明显第二个fulfilment handler附属于`p3`而不是`p2`。这是一个细节，但也是重要的区别。如果`p2`被rejected，将不会调用第二个fulfilment handler。例如：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+let p2 = new Promise(function(resolve, reject) {
+    reject(43);
+});
+
+p1.then(function(value) {
+    // 第一个 fulfillment handler
+    console.log(value);     // 42
+    return p2;
+}).then(function(value) {
+    // 第二个 fulfillment handler
+    console.log(value);     // never called
+});
+```
+
+在这个示例中，第二个fulfillment handler永远不会被调用，因为`p2`被rejected。然后，你可以附加一个rejection handler：
+ 
+```js
+ let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+let p2 = new Promise(function(resolve, reject) {
+    reject(43);
+});
+
+p1.then(function(value) {
+    // 第一个 fulfillment handler
+    console.log(value);     // 42
+    return p2;
+}).catch(function(value) {
+    // rejection handler
+    console.log(value);     // 43
+});
+```
+
+这里，rejection handler会被调用，作为`p2`被rejected的结果。来自`p2`的rejected值43传入该rejection handler。
+
+当promise执行器执行时，filfillment或者rejection handlers返回的thenables不会改变。第一个定义的promise首先会运行它的执行器，然后将会运行第二个promise执行器等等。返回的thenables允许你定义这个promise结果的其他响应。你可以通过在fulfillment handler中创建新的promise，来延迟执行fulfillment handler。比如：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+p1.then(function(value) {
+    console.log(value);     // 42
+
+    // 创建新的promise
+    let p2 = new Promise(function(resolve, reject) {
+        resolve(43);
+    });
+
+    return p2
+}).then(function(value) {
+    console.log(value);     // 43
+});
+```
+在这个示例中，`p1`的fulfillment handler中创建一个新的promise。这意味着，第二个fulfillment handler不会执行，直到`p2`fulfilled之后。在你想等前一个promise处理之后触发另外一个promise时，这种模式很有用。
+
+## 响应多个Promises
+到目前为止，本章的每个例子都是针对一个响应对应一个promise。然而，有时候你想监控多个promise的进程，以此确定下一个行为。ECMAScript 6提供了两个方法去监控多个promises: `Promise.all()`和`Promise.race()`。
+
+### Promise.all()方法
+这个`Promise.all()`方法接受一个参数，这是一个可以监控promises的迭代（例如数组），而且仅当迭代中每个promise resolved后，返回一个resolved promise。当迭代中的每个promise都是fulfilled，返回的promise是fulfilled，比如这个示例：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+let p2 = new Promise(function(resolve, reject) {
+    resolve(43);
+});
+
+let p3 = new Promise(function(resolve, reject) {
+    resolve(44);
+});
+
+let p4 = Promise.all([p1, p2, p3]);
+
+p4.then(function(value) {
+    console.log(Array.isArray(value));  // true
+    console.log(value[0]);              // 42
+    console.log(value[1]);              // 43
+    console.log(value[2]);              // 44
+});
+```
+
+这里每个promise用数字resolves。调用`Promise.all()`创建promise`p4`，当promises `p1`，`p2`和`p3`都fulfilled之后，`p4`最后fulfilled。传入`p4` fulfillment handler的结果是一个包含每个resolved值的数组：42，43和44。这些值按传入`Promise.all`的promises顺序存储，所以你可以根据resolved它们的promises匹配promise的结果。
+
+如果传入`Promise.all()`的任何一个promise被rejected，返回的promise会立即rejected，不会等待其他promises完成：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+let p2 = new Promise(function(resolve, reject) {
+    reject(43);
+});
+
+let p3 = new Promise(function(resolve, reject) {
+    resolve(44);
+});
+
+let p4 = Promise.all([p1, p2, p3]);
+
+p4.catch(function(value) {
+    console.log(Array.isArray(value))   // false
+    console.log(value);                 // 43
+});
+```
+
+在这个例子中，`p2`的rejected值为43。`p4`的rejection handler会立即调用，不会等待`p1`和`p3`执行（它们仍然会执行；只是`p4`不会等待）。
+
+rejection handler总是接受单个值而不是数组，而且这个值是来自rejected promise的rejection值。在这个例子中，rejection handler传入43对应`p2`的rejection。
+
+### Promise.race()方法
+`Promise.race()`方法提供一个稍微不同的方法监听多个promises。这个方法也接受promises的迭代去监听，并且返回一个promise，但是只要第一个promise被处理，返回的promise就会被处理。不像`Promise.all()`方法等所有promises都被fulfilled，只要数组中的任何一个promise被fulfilled，`Promise.race()`方法就会返回一个合适的promise。比如：
+
+```js
+let p1 = Promise.resolve(42);
+
+let p2 = new Promise(function(resolve, reject) {
+    resolve(43);
+});
+
+let p3 = new Promise(function(resolve, reject) {
+    resolve(44);
+});
+
+let p4 = Promise.race([p1, p2, p3]);
+
+p4.then(function(value) {
+    console.log(value);     // 42
+});
+```
+
+在这段代码中，创建`p1`作为fullfilled promise，然而其他promise调度工作。然后`p4`的fulfillment handler就会被调用，值为42，并且忽略其他promises。传入`Promise.race()`的promises真是一场比赛，看哪个promise首先处理。如果处理的第一个promise是fulfilled，那么返回的promise也是fulfilled；如果处理的第一个promise是rejected，那么返回的promise是rejected。这里有一个用rejection的例子：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+let p2 = Promise.reject(43);
+
+let p3 = new Promise(function(resolve, reject) {
+    resolve(44);
+});
+
+let p4 = Promise.race([p1, p2, p3]);
+
+p4.catch(function(value) {
+    console.log(value);     // 43
+});
+```
+
+这里，`p4`是rejected，因为在调用`Promise.race()`时，`p2`已经处于rejected状态。即使`p1`和`p3`是fulfilled，这些结果会被忽略，因为它们在`p2`被rejected之后发生。
+
+## 继承Promises
+
+就像其他的内置类型，你可以使用promise作为派生类的基础。这可以让你定义你的自己的promises种类去扩展内置promises的功能。比如，假设你想一个promise，除了通常的`then()`和`catch()`方法，你还可以使用命名为`success()`和`failure()`的方法。你可以按照一下方式创建该promise的类型：
+
+```js
+class MyPromise extends Promise {
+
+    // 使用默认的constructor
+
+    success(resolve, reject) {
+        return this.then(resolve, reject);
+    }
+
+    failure(reject) {
+        return this.catch(reject);
+    }
+
+}
+
+let promise = new MyPromise(function(resolve, reject) {
+    resolve(42);
+});
+
+promise.success(function(value) {
+    console.log(value);             // 42
+}).failure(function(value) {
+    console.log(value);
+});
+```
+
+在这例子中，`MyPromise`源自`Promise`，而且有两个额外的方法。`success()`方法模拟`resolve()`，`failure()`模拟`reject()`方法。
+
+每个添加的方法使用`this`去调用它模拟的方法。衍生的promise和内置的promise功能相同，除了现在你可以调用`success()`和`failure()`，如果你想。
+
+因为静态方法是继承的，`MyPromise.resolve()`方法，`MyPromise.reject()`，`MyPromise.race()`和`MyPromise.all()`在派生的promises上也是存在的。最后两个方法和内置的方法表现的一致，但是头两个方法稍微有点区别。
+
+不管传入什么值，`MyPromise.resolve()`和`MyPromise.reject()`都会返回一个`MyPromise`的实例，因为这些方法使用`Symbol.species`属性（涵盖在第九章）去判断返回的promise类型。如果内置的promise出入其中一个方法，这个promise将会被resolved或者rejected，而且这个方法将返回一个新的`MyPromise`，所以你可以指定fulfillment和rejection handler。比如：
+
+```js
+let p1 = new Promise(function(resolve, reject) {
+    resolve(42);
+});
+
+let p2 = MyPromise.resolve(p1);
+p2.success(function(value) {
+    console.log(value);         // 42
+});
+
+console.log(p2 instanceof MyPromise);   // true
+```
+
+这里，`p1`是一个内置的promise，将他传入`MyPromise.resolve()`方法。所得到的结果P2是`MyPromise`的实例，其中从`p1`中resolved的值传入fulfillment handler。
+
+如果`MyPromise`的实例传入`MyPromise.resolve()`或者`MyPromise.reject()`方法，它将直接返回，不需要resolved。在所有其他方式，这两个方法的行为与`MyPromise.resolve()`和`MyPromise.reject()`一样。
+
+## 异步任务运行
+
+在第八章，我介绍了generators，而且向你们展示如何使用它们运行异步任务，比如：
+
+```js
+let fs = require("fs");
+
+function run(taskDef) {
+
+    // 创建迭代器, 在其他地方也可以访问
+    let task = taskDef();
+
+    // 启动任务
+    let result = task.next();
+
+    // 递归函数保持调用next()
+    function step() {
+
+        // 如果还有更多的事要做
+        if (!result.done) {
+            if (typeof result.value === "function") {
+                result.value(function(err, data) {
+                    if (err) {
+                        result = task.throw(err);
+                        return;
+                    }
+
+                    result = task.next(data);
+                    step();
+                });
+            } else {
+                result = task.next(result.value);
+                step();
+            }
+
+        }
+    }
+
+    // 启动程序
+    step();
+
+}
+
+// 定义和任务运行程序一起使用的函数
+
+function readFile(filename) {
+    return function(callback) {
+        fs.readFile(filename, callback);
+    };
+}
+
+// 运行任务
+
+run(function*() {
+    let contents = yield readFile("config.json");
+    doSomethingWith(contents);
+    console.log("Done");
+});
+```
+
+这个实现有一些痛点。首先，再返回函数的函数包装每个函数有点混乱（甚至这个语句也是混乱的）。其次，没有办法去区分作为任务运行程序的回调函数的返回值和不是回调的返回值。
+
+使用promise，你可以通过确保每个异步操作返回promise，来大大简化和概括这个流程。通用接口意味着可以大量简化一步代码。这里有一种方式，你可以简化任务运行程序：
+
+```js
+let fs = require("fs");
+
+function run(taskDef) {
+
+    // 创建迭代器
+    let task = taskDef();
+
+    // 启动任务
+    let result = task.next();
+
+    // 递归函数进行遍历
+    (function step() {
+
+        // 如果还有更多的事情要做
+        if (!result.done) {
+
+            // resolve一个promise，�使其更容易
+            let promise = Promise.resolve(result.value);
+            promise.then(function(value) {
+                result = task.next(value);
+                step();
+            }).catch(function(error) {
+                result = task.throw(error);
+                step();
+            });
+        }
+    }());
+}
+
+// 定义与任务运行程序一起使用的函数
+
+function readFile(filename) {
+    return new Promise(function(resolve, reject) {
+        fs.readFile(filename, function(err, contents) {
+            if (err) {
+                reject(err);
+            } else {
+                resolve(contents);
+            }
+        });
+    });
+}
+
+// 运行任务
+
+run(function*() {
+    let contents = yield readFile("config.json");
+    doSomethingWith(contents);
+    console.log("Done");
+});
+```
+
+这个版本的代码，通用的`run()`函数执行生成器（generator）创建迭代器。它调用`task.next()`去启动任务，并且递归调用`step()`直到迭代器完成。
+
+在`step()`函数内，如果有更多的事情要做，那么`result.done`是`false`。在这点上，`result.value`应该是一个promise，但是调用`Promise.resolve()`，以防万一有问题的函数没有返回promise。（记住，`Promise.resolve()`通过任何传入的promise，并且把任何非promise包裹在promise里。）然后，添加一个fulfillment handler，它提取promise的值，并且把值传回迭代器。之后，在`step()`调用自身之前，`result`分配给为下一个yield结果。
+
+rejection handler把任何rejection结果存储在一个错误对象中。`task.throw()`方法把错误对象传回迭代器，如果在任务中存在错误，则将`result`分配给下一个yield结果。最后，在`catch()`中调用`step()`继续执行。
+
+这个`run()`函数可以运行任何生成器，它使用`yield`去异步代码，不需要暴露promises（或者回调函数）给开发者。事实上，因为函数调用的返回值总是转换为promise，所以这个函数甚至可以返回除了promise之外的内容。这表示，当使用`yield`调用时，同步和异步方法都可以正常地工作，而且你不需要判断返回的值是否是一个promise。
+
+唯一的担心是确保异步函数比如`readFile()`返回能够一个正确标识其状态的promise。对于Node.js内置方法，意味着你必须把这些方法转换为返回promises而不是使用回调函数。
+
+### 未来的异步任务运行
+在我写作的时候，有一个即将到来的解决方案给JavaScript中异步任务运行带来更简单的语法。`await`语法的工作正在进行，它将进一步反映先前部分基于promise的例子。基本思想是使用标记为`async`而不是generator的函数，在调用函数时，使用`await`而不是`yield`，比如：
+
+```js
+(async function() { 
+    let contents = await readFile("config.json");  
+    doSomethingWith(contents);
+    console.log("Done");
+});
+```
+
+`function`之前的`async`关键字指示，这个函数以异步的方式运行。`await`关键字表示`readFile("config.json")`函数调用应该返回promise。响应应该包裹在promise中。就像之前部分的`run()`的实现，如果promise是rejected `await` 将会抛出异常，否则从promise中返回值。最终结果是你可以编写异步代码，就像它是同步的，而不需要管理基于迭代器的状态机的开销。`await`语法预计将在ECMAScript 2017 （ECMAScript 8）实现。
+
+## 概括
+
+Promises旨在异步操作给予你比时间和回调更多的控制和组合，来改善JavaScript中的异步编程。Promises将作业添加到JavaScript引擎的作业队列中，以便稍后执行，而第二个作业队列追踪promise fulfillment 和rejection handler，以确保正确执行。
+
+Promises有三种状态：pending，fulfilled和rejected。promise开始为pending状态，成功执行后为变为fulfilled状态，或者失败后为rejected状态。在任何一种情况下，当promise处理时，可以添加handler来执行。`then`方法允许你分配一个fulfillment和rejection handler，以及`catch()`方法只允许你分配一个rejection handler。
+
+你可以用各种方式链式调用promises，并在它们之间传递信息。当之前的promise被resolved，每次调用`then()`会创建和返回一个新的resolved promise。这样可以使用promise链触发一系列异步事件的响应。你也可以使用`Promise.race()`和`Promise.all()`来监控多个promises的进展，并做出相应的回应。
+
+当你组合使用generator和promises时，异步任务运行更简单，因为promises提供了异步操作符可以返回的通用接口。然后你可以使用generator和`yield`操作符去等待异步响应并进行适当响应。
+
+大部分新的web APIs正在建立在promises之上，你可以期待更多的后续。
