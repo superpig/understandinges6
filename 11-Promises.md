@@ -1062,7 +1062,7 @@ rejection handler把任何rejection结果存储在一个错误对象中。`task.
 
 ## 概括
 
-Promises旨在异步操作给予你比时间和回调更多的控制和组合，来改善JavaScript中的异步编程。Promises将作业添加到JavaScript引擎的作业队列中，以便稍后执行，而第二个作业队列追踪promise fulfillment 和rejection handler，以确保正确执行。
+Promises旨在异步操作给予你比事件和回调更多的控制和组合，来改善JavaScript中的异步编程。Promises将作业添加到JavaScript引擎的作业队列中，以便稍后执行，而第二个作业队列追踪promise fulfillment 和rejection handler，以确保正确执行。
 
 Promises有三种状态：pending，fulfilled和rejected。promise开始为pending状态，成功执行后为变为fulfilled状态，或者失败后为rejected状态。在任何一种情况下，当promise处理时，可以添加handler来执行。`then`方法允许你分配一个fulfillment和rejection handler，以及`catch()`方法只允许你分配一个rejection handler。
 
